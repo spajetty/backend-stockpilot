@@ -1,0 +1,10 @@
+.vs/
+[Bb]in/
+[Oo]bj/
+*.user
+*.suo
+*.log
+secrets.json
+.env
+.env.*
+!.env.example
