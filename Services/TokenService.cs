@@ -1,11 +1,11 @@
-﻿using backend_stockpilot.Models;
-using backend_stockpilot.Options;
-using backend_stockpilot.Services.Interfaces;
+﻿using System.Security.Claims;
+using System.Text;
 using Microsoft.Extensions.Options;
 using Microsoft.IdentityModel.JsonWebTokens;
 using Microsoft.IdentityModel.Tokens;
-using System.Security.Claims;
-using System.Text;
+using backend_stockpilot.Models;
+using backend_stockpilot.Options;
+using backend_stockpilot.Services.Interfaces;
 
 namespace backend_stockpilot.Services;
 
@@ -18,23 +18,25 @@ public class TokenService(IOptions<JwtOptions> options) : ITokenService
         var expires = DateTime.UtcNow.AddMinutes(_jwt.ExpiryMinutes);
         var key = new SymmetricSecurityKey(Encoding.UTF8.GetBytes(_jwt.Key));
 
+        var claims = new List<Claim>
+        {
+            new("sub", user.Id.ToString()),
+            new("email", user.Email),
+            new("name", user.DisplayName),
+            new("role", user.Role.ToString()),
+        };
+
+        if (user.IsFirstLogin) claims.Add(new Claim("setup", "pending"));
+
         var descriptor = new SecurityTokenDescriptor
         {
-            // Short claim names; Program.cs tells the validator to read "name" and "role"
-            Subject = new ClaimsIdentity(new[]
-            {
-                new Claim("sub", user.Id.ToString()),
-                new Claim("email", user.Email),
-                new Claim("name", user.FullName),
-                new Claim("role", user.Role.ToString()),
-            }),
+            Subject = new ClaimsIdentity(claims),
             Expires = expires,
             Issuer = _jwt.Issuer,
             Audience = _jwt.Audience,
             SigningCredentials = new SigningCredentials(key, SecurityAlgorithms.HmacSha256),
         };
 
-        var token = new JsonWebTokenHandler().CreateToken(descriptor);
-        return (token, expires);
+        return (new JsonWebTokenHandler().CreateToken(descriptor), expires);
     }
 }
