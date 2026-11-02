@@ -33,6 +33,12 @@ public class User
     public string? GoogleSubject { get; set; }
 
     public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
+    public int? StoreId { get; set; }
+    public Store? Store { get; set; }
+    public int? InvitedById { get; set; }
+    public User? InvitedBy { get; set; }
+
+    public DateTime? LastActiveAt { get; set; }
 
     // Get-only, so EF Core doesn't map it to a column
     public string DisplayName =>
