@@ -22,6 +22,82 @@ namespace backend_stockpilot.Migrations
 
             NpgsqlModelBuilderExtensions.UseIdentityByDefaultColumns(modelBuilder);
 
+            modelBuilder.Entity("backend_stockpilot.Models.Store", b =>
+                {
+                    b.Property<int>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("integer");
+
+                    NpgsqlPropertyBuilderExtensions.UseIdentityByDefaultColumn(b.Property<int>("Id"));
+
+                    b.Property<string>("Address")
+                        .HasMaxLength(300)
+                        .HasColumnType("character varying(300)");
+
+                    b.Property<string>("Code")
+                        .IsRequired()
+                        .HasMaxLength(10)
+                        .HasColumnType("character varying(10)");
+
+                    b.Property<DateTime>("CreatedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("Currency")
+                        .IsRequired()
+                        .HasMaxLength(3)
+                        .HasColumnType("character varying(3)");
+
+                    b.Property<int>("DefaultReorderLevel")
+                        .HasColumnType("integer");
+
+                    b.Property<string>("Email")
+                        .HasMaxLength(254)
+                        .HasColumnType("character varying(254)");
+
+                    b.Property<bool>("IsActive")
+                        .HasColumnType("boolean");
+
+                    b.Property<bool>("LowStockAlerts")
+                        .HasColumnType("boolean");
+
+                    b.Property<string>("Name")
+                        .IsRequired()
+                        .HasMaxLength(150)
+                        .HasColumnType("character varying(150)");
+
+                    b.Property<string>("Phone")
+                        .HasMaxLength(40)
+                        .HasColumnType("character varying(40)");
+
+                    b.Property<string>("ReceiptFooter")
+                        .HasMaxLength(500)
+                        .HasColumnType("character varying(500)");
+
+                    b.Property<decimal>("TaxRate")
+                        .HasPrecision(5, 2)
+                        .HasColumnType("numeric(5,2)");
+
+                    b.Property<string>("TimeZone")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)");
+
+                    b.Property<DateTime>("UpdatedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("Code")
+                        .IsUnique();
+
+                    b.ToTable("Stores", null, t =>
+                        {
+                            t.HasCheckConstraint("CK_Stores_DefaultReorderLevel", "\"DefaultReorderLevel\" >= 0");
+
+                            t.HasCheckConstraint("CK_Stores_TaxRate", "\"TaxRate\" >= 0 AND \"TaxRate\" <= 100");
+                        });
+                });
+
             modelBuilder.Entity("backend_stockpilot.Models.User", b =>
                 {
                     b.Property<int>("Id")
@@ -53,11 +129,17 @@ namespace backend_stockpilot.Migrations
                         .HasMaxLength(64)
                         .HasColumnType("character varying(64)");
 
+                    b.Property<int?>("InvitedById")
+                        .HasColumnType("integer");
+
                     b.Property<bool>("IsActive")
                         .HasColumnType("boolean");
 
                     b.Property<bool>("IsFirstLogin")
                         .HasColumnType("boolean");
+
+                    b.Property<DateTime?>("LastActiveAt")
+                        .HasColumnType("timestamp with time zone");
 
                     b.Property<string>("MiddleName")
                         .HasMaxLength(100)
@@ -75,6 +157,9 @@ namespace backend_stockpilot.Migrations
                     b.Property<DateTime?>("SetupCompletedAt")
                         .HasColumnType("timestamp with time zone");
 
+                    b.Property<int?>("StoreId")
+                        .HasColumnType("integer");
+
                     b.Property<string>("Surname")
                         .HasMaxLength(100)
                         .HasColumnType("character varying(100)");
@@ -87,7 +172,32 @@ namespace backend_stockpilot.Migrations
                     b.HasIndex("GoogleSubject")
                         .IsUnique();
 
+                    b.HasIndex("InvitedById");
+
+                    b.HasIndex("StoreId");
+
                     b.ToTable("Users");
+                });
+
+            modelBuilder.Entity("backend_stockpilot.Models.User", b =>
+                {
+                    b.HasOne("backend_stockpilot.Models.User", "InvitedBy")
+                        .WithMany()
+                        .HasForeignKey("InvitedById");
+
+                    b.HasOne("backend_stockpilot.Models.Store", "Store")
+                        .WithMany("Users")
+                        .HasForeignKey("StoreId")
+                        .OnDelete(DeleteBehavior.Restrict);
+
+                    b.Navigation("InvitedBy");
+
+                    b.Navigation("Store");
+                });
+
+            modelBuilder.Entity("backend_stockpilot.Models.Store", b =>
+                {
+                    b.Navigation("Users");
                 });
 #pragma warning restore 612, 618
         }
