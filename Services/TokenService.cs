@@ -28,6 +28,9 @@ public class TokenService(IOptions<JwtOptions> options) : ITokenService
 
         if (user.IsFirstLogin) claims.Add(new Claim("setup", "pending"));
 
+        if (user.StoreId.HasValue)
+            claims.Add(new Claim("store_id", user.StoreId.Value.ToString()));
+
         var descriptor = new SecurityTokenDescriptor
         {
             Subject = new ClaimsIdentity(claims),
