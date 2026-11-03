@@ -10,4 +10,7 @@ public class CreateUserRequest
 
     [Required]
     public UserRole? Role { get; set; }
+
+    [Required]
+    public int? StoreId { get; set; }
 }

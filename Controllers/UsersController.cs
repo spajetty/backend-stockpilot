@@ -12,12 +12,20 @@ namespace backend_stockpilot.Controllers;
 [ApiController]
 [Route("api/users")]
 [Authorize(Roles = "Owner")]
-public class UsersController(AppDbContext db, IEmailService email, ILogger<UsersController> logger) : ControllerBase
+public class UsersController(
+    AppDbContext db,
+    IEmailService email,
+    ICurrentStore currentStore,
+    ILogger<UsersController> logger) : ControllerBase
 {
     [HttpGet]
     public async Task<ActionResult<List<UserSummaryDto>>> List(CancellationToken ct)
     {
-        var users = await db.Users.AsNoTracking().OrderByDescending(u => u.CreatedAt).ToListAsync(ct);
+        // Users aren't store-filtered, so the owner sees every employee in every store.
+        var users = await db.Users.AsNoTracking()
+            .Include(u => u.Store)
+            .OrderByDescending(u => u.CreatedAt)
+            .ToListAsync(ct);
         return users.Select(UserSummaryDto.From).ToList();
     }
 
@@ -27,6 +35,11 @@ public class UsersController(AppDbContext db, IEmailService email, ILogger<Users
         var role = request.Role!.Value;
         if (role == UserRole.Owner)
             return BadRequest(new { message = "Owner accounts can't be created from here." });
+
+        // Tracked on purpose: it is attached to the new user below.
+        var store = await db.Stores.FirstOrDefaultAsync(s => s.Id == request.StoreId && s.IsActive, ct);
+        if (store is null)
+            return BadRequest(new { message = "Choose an active store for this employee." });
 
         var address = request.Email.Trim().ToLowerInvariant();
         if (await db.Users.AnyAsync(u => u.Email == address, ct))
@@ -39,6 +52,8 @@ public class UsersController(AppDbContext db, IEmailService email, ILogger<Users
             Role = role,
             PasswordHash = BCrypt.Net.BCrypt.HashPassword(temporaryPassword),
             IsFirstLogin = true,
+            Store = store,
+            InvitedById = currentStore.UserId,
         };
         db.Users.Add(user);
         await db.SaveChangesAsync(ct);
