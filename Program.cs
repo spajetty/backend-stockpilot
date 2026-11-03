@@ -63,6 +63,9 @@ builder.Services
     .AddControllers()
     .AddJsonOptions(o => o.JsonSerializerOptions.Converters.Add(new JsonStringEnumConverter()));
 
+builder.Services.AddHttpContextAccessor();
+builder.Services.AddScoped<ICurrentStore, CurrentStore>();
+
 var app = builder.Build();
 
 using (var scope = app.Services.CreateScope())
