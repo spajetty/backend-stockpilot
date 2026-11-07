@@ -1,3 +1,7 @@
 <Solution>
+  <Folder Name="/Tests/">
+    <Project Path="Tests/StockPilot.IntegrationTests/StockPilot.IntegrationTests.csproj" />
+    <Project Path="Tests/StockPilot.UnitTests/StockPilot.UnitTests.csproj" />
+  </Folder>
   <Project Path="backend-stockpilot.csproj" />
 </Solution>
