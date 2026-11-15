@@ -102,3 +102,5 @@ app.MapControllers();
 app.MapHub<StockHub>("/hubs/stock");
 
 app.Run();
+
+public partial class Program { }
