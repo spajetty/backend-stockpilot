@@ -2,8 +2,8 @@
 
 namespace StockPilot.IntegrationTests;
 
+[Collection("Integration Tests")]
 public class InfrastructureSmokeTests
-    : IClassFixture<CustomWebApplicationFactory>
 {
     private readonly HttpClient _client;
 
