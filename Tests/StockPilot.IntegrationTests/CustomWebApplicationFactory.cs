@@ -2,8 +2,10 @@
 using backend_stockpilot.Data;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Mvc.Testing;
+using Microsoft.AspNetCore.TestHost;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
+using Microsoft.Extensions.DependencyInjection;
 using Testcontainers.PostgreSql;
 
 namespace StockPilot.IntegrationTests;
@@ -48,10 +50,8 @@ public class CustomWebApplicationFactory
 
     public async Task InitializeAsync()
     {
-        // Start PostgreSQL container.
         await _postgres.StartAsync();
 
-        // Apply existing EF Core migrations.
         var options = new DbContextOptionsBuilder<AppDbContext>()
             .UseNpgsql(_postgres.GetConnectionString())
             .Options;
@@ -61,8 +61,6 @@ public class CustomWebApplicationFactory
             await db.Database.MigrateAsync();
         }
 
-        // Start the application.
-        // DbSeeder will execute against the test database.
         using var client = CreateClient();
     }
 
