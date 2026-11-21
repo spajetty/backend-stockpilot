@@ -19,7 +19,29 @@ public class SalesController(AppDbContext db, IHubContext<StockHub> hub, ILogger
 {
     private string? Claim(string type) => User.FindFirst(type)?.Value;
 
-    private static decimal Round(decimal v) => Math.Round(v, 2, MidpointRounding.AwayFromZero);
+    internal static decimal Round(decimal v) => Math.Round(v, 2, MidpointRounding.AwayFromZero);
+
+    private static string AuditSummary(string head, string reason)
+    {
+        const int max = 500;
+        var prefix = $"{head}. Reason: ";
+        var room = max - prefix.Length;
+        return reason.Length <= room ? prefix + reason : prefix + reason[..(room - 1)] + "…";
+    }
+
+    internal static decimal CalculateRefundAmount(Sale sale, SaleItem item, int quantity)
+    {
+        var ratio = sale.Subtotal > 0 ? sale.Total / sale.Subtotal : 1m;
+        return Round(item.LineTotal * quantity / item.Quantity * ratio);
+    }
+
+    internal static decimal SettleFinalRefund(List<RefundItem> items, decimal saleTotal, decimal alreadyRefunded)
+    {
+        var amount = items.Sum(i => i.Amount);
+        var diff = (saleTotal - alreadyRefunded) - amount;
+        items[^1].Amount += diff;
+        return amount + diff;
+    }
 
     // Cashier -> only their own sales. Manager -> their store.
     // Owner -> no extra filter here; the global store filter handles the selected store.
@@ -40,13 +62,13 @@ public class SalesController(AppDbContext db, IHubContext<StockHub> hub, ILogger
         return q;
     }
 
-    private static string DisplayStatus(SaleStatus status, SalePaymentStatus pay) =>
+    internal static string DisplayStatus(SaleStatus status, SalePaymentStatus pay) =>
         status == SaleStatus.Voided ? "Voided"
         : pay == SalePaymentStatus.Refunded ? "Refunded"
         : pay == SalePaymentStatus.PartiallyRefunded ? "PartiallyRefunded"
         : "Completed";
 
-    private static SaleDetailDto ToDetail(Sale sale)
+    internal static SaleDetailDto ToDetail(Sale sale)
     {
         var refundedQty = sale.Refunds
             .SelectMany(r => r.Items)
@@ -218,8 +240,6 @@ public class SalesController(AppDbContext db, IHubContext<StockHub> hub, ILogger
 
         var wanted = req.Items.GroupBy(i => i.SaleItemId).ToDictionary(g => g.Key, g => g.Sum(i => i.Quantity));
 
-        // The customer paid (subtotal - discount + VAT), so each unit refunds its share of that
-        var ratio = sale.Subtotal > 0 ? sale.Total / sale.Subtotal : 1m;
         var refundItems = new List<RefundItem>();
 
         foreach (var (saleItemId, qty) in wanted)
@@ -237,7 +257,7 @@ public class SalesController(AppDbContext db, IHubContext<StockHub> hub, ILogger
                 SaleItemId = saleItemId,
                 ProductId = item.ProductId,
                 Quantity = qty,
-                Amount = Round(item.LineTotal * qty / item.Quantity * ratio),
+                Amount = CalculateRefundAmount(sale, item, qty),
             });
         }
 
@@ -247,11 +267,7 @@ public class SalesController(AppDbContext db, IHubContext<StockHub> hub, ILogger
         var fullyRefunded = sale.Items.All(i =>
             refundedQty.GetValueOrDefault(i.Id) + wanted.GetValueOrDefault(i.Id) >= i.Quantity);
         if (fullyRefunded)
-        {
-            var diff = (sale.Total - alreadyRefunded) - amount;
-            refundItems[^1].Amount += diff;
-            amount += diff;
-        }
+            amount = SettleFinalRefund(refundItems, sale.Total, alreadyRefunded);
 
         if (alreadyRefunded + amount > sale.Total)
             return BadRequest(new { message = "That's more than what's left to refund on this sale." });
@@ -341,8 +357,9 @@ public class SalesController(AppDbContext db, IHubContext<StockHub> hub, ILogger
             Action = "Sale refunded",
             Entity = "Sale",
             EntityId = sale.SaleNumber,
-            Summary = $"{sale.SaleNumber}: refunded ₱{amount:N2} ({refundItems.Sum(x => x.Quantity)} units)"
-                      + (req.ReturnToStock ? ", returned to stock" : "") + $". Reason: {reason}",
+            Summary = AuditSummary(
+                $"{sale.SaleNumber}: refunded ₱{amount:N2} ({refundItems.Sum(x => x.Quantity)} units)"
+                + (req.ReturnToStock ? ", returned to stock" : ""), reason),
             Outcome = AuditOutcome.Success,
             CreatedAt = now,
         });
