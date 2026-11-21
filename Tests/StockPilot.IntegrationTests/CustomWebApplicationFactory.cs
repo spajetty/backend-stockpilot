@@ -15,8 +15,11 @@ public class CustomWebApplicationFactory
 {
     private readonly PostgreSqlContainer _postgres;
 
-    private const string TestJwtKey =
-        "StockPilotIntegrationTestKey_2026_SecureSigningKey";
+    public const string JwtIssuer = "StockPilot.IntegrationTests";
+    public const string JwtAudience = "StockPilot.IntegrationTests";
+    public const string JwtKey = "StockPilotIntegrationTestKey_2026_SecureSigningKey";
+
+    public string DbConnectionString => _postgres.GetConnectionString();
 
     public CustomWebApplicationFactory()
     {
@@ -40,7 +43,7 @@ public class CustomWebApplicationFactory
 
                 ["Jwt:Issuer"] = "StockPilot.IntegrationTests",
                 ["Jwt:Audience"] = "StockPilot.IntegrationTests",
-                ["Jwt:Key"] = TestJwtKey,
+                ["Jwt:Key"] = JwtKey,
                 ["Jwt:ExpiryMinutes"] = "60"
             };
 

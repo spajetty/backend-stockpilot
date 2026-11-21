@@ -26,6 +26,7 @@
     <Content Remove="Tests/**" />
     <None Remove="Tests/**" />
     <EmbeddedResource Remove="Tests/**" />
+	<InternalsVisibleTo Include="StockPilot.UnitTests" />
   </ItemGroup>
 
 </Project>
