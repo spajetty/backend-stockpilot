@@ -61,5 +61,11 @@ public class ProductConfiguration : IEntityTypeConfiguration<Product>
             .HasForeignKey(p => p.CategoryId).OnDelete(DeleteBehavior.SetNull);
         builder.HasOne(p => p.Supplier).WithMany()
             .HasForeignKey(p => p.SupplierId).OnDelete(DeleteBehavior.SetNull);
+
+        builder.Property(p => p.Approval).HasConversion<string>().HasMaxLength(20);
+        builder.Property(p => p.RejectionReason).HasMaxLength(500);
+        builder.HasOne<Store>().WithMany()
+            .HasForeignKey(p => p.RequestedByStoreId).OnDelete(DeleteBehavior.SetNull);
+        builder.HasIndex(p => p.Approval).HasFilter("\"Approval\" = 'Pending'");
     }
 }
