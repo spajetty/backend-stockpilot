@@ -222,8 +222,16 @@ namespace backend_stockpilot.Migrations
 
                     NpgsqlPropertyBuilderExtensions.UseIdentityByDefaultColumn(b.Property<int>("Id"));
 
+                    b.Property<string>("Approval")
+                        .IsRequired()
+                        .HasMaxLength(20)
+                        .HasColumnType("character varying(20)");
+
                     b.Property<DateTime?>("ArchivedAt")
                         .HasColumnType("timestamp with time zone");
+
+                    b.Property<bool>("AvailableInPos")
+                        .HasColumnType("boolean");
 
                     b.Property<string>("Barcode")
                         .HasMaxLength(64)
@@ -258,7 +266,23 @@ namespace backend_stockpilot.Migrations
                         .HasMaxLength(200)
                         .HasColumnType("character varying(200)");
 
+                    b.Property<int>("PendingOpeningStock")
+                        .HasColumnType("integer");
+
+                    b.Property<string>("RejectionReason")
+                        .HasMaxLength(500)
+                        .HasColumnType("character varying(500)");
+
                     b.Property<int>("ReorderLevel")
+                        .HasColumnType("integer");
+
+                    b.Property<int?>("RequestedByStoreId")
+                        .HasColumnType("integer");
+
+                    b.Property<DateTime?>("ReviewedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<int?>("ReviewedById")
                         .HasColumnType("integer");
 
                     b.Property<decimal>("SellingPrice")
@@ -277,6 +301,9 @@ namespace backend_stockpilot.Migrations
 
                     b.HasKey("Id");
 
+                    b.HasIndex("Approval")
+                        .HasFilter("\"Approval\" = 'Pending'");
+
                     b.HasIndex("Barcode")
                         .IsUnique()
                         .HasFilter("\"Barcode\" IS NOT NULL");
@@ -284,6 +311,8 @@ namespace backend_stockpilot.Migrations
                     b.HasIndex("CategoryId");
 
                     b.HasIndex("CreatedById");
+
+                    b.HasIndex("RequestedByStoreId");
 
                     b.HasIndex("Sku")
                         .IsUnique();
@@ -295,6 +324,8 @@ namespace backend_stockpilot.Migrations
                     b.ToTable("Products", null, t =>
                         {
                             t.HasCheckConstraint("CK_Products_CostPrice", "\"CostPrice\" >= 0");
+
+                            t.HasCheckConstraint("CK_Products_PendingOpeningStock", "\"PendingOpeningStock\" >= 0");
 
                             t.HasCheckConstraint("CK_Products_ReorderLevel", "\"ReorderLevel\" >= 0");
 
@@ -1011,6 +1042,11 @@ namespace backend_stockpilot.Migrations
                     b.HasOne("backend_stockpilot.Models.User", "CreatedBy")
                         .WithMany()
                         .HasForeignKey("CreatedById");
+
+                    b.HasOne("backend_stockpilot.Models.Store", null)
+                        .WithMany()
+                        .HasForeignKey("RequestedByStoreId")
+                        .OnDelete(DeleteBehavior.SetNull);
 
                     b.HasOne("backend_stockpilot.Models.Supplier", "Supplier")
                         .WithMany()
