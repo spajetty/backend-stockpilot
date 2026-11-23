@@ -38,7 +38,14 @@ public class Product
     public decimal SellingPrice { get; set; }
     public int ReorderLevel { get; set; }
     public string? ImageUrl { get; set; }
-    public bool IsActive { get; set; } = true;     
+    public bool IsActive { get; set; } = true;
+    public bool AvailableInPos { get; set; } = true;
+    public ApprovalStatus Approval { get; set; } = ApprovalStatus.NotRequired;
+    public int? RequestedByStoreId { get; set; }
+    public int PendingOpeningStock { get; set; }
+    public int? ReviewedById { get; set; }
+    public DateTime? ReviewedAt { get; set; }
+    public string? RejectionReason { get; set; }
     public DateTime? ArchivedAt { get; set; }      
     public int? CreatedById { get; set; }
     public User? CreatedBy { get; set; }
