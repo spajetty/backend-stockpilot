@@ -55,7 +55,7 @@ public class PosController(AppDbContext db, IHubContext<StockHub> hub, ILogger<P
 
         var products = await (
             from p in db.Products.AsNoTracking()
-            where p.IsActive && p.ArchivedAt == null
+            where p.IsActive && p.ArchivedAt == null && p.AvailableInPos
             join i in db.InventoryLevels.AsNoTracking().Where(i => i.StoreId == sid)
                 on p.Id equals i.ProductId into inv
             from i in inv.DefaultIfEmpty()
@@ -88,7 +88,7 @@ public class PosController(AppDbContext db, IHubContext<StockHub> hub, ILogger<P
 
         var ids = wanted.Keys.ToList();
         var products = await db.Products.AsNoTracking()
-            .Where(p => ids.Contains(p.Id) && p.IsActive && p.ArchivedAt == null)
+            .Where(p => ids.Contains(p.Id) && p.IsActive && p.ArchivedAt == null && p.AvailableInPos)
             .ToDictionaryAsync(p => p.Id, ct);
         if (products.Count != ids.Count)
             return BadRequest(new { message = "One or more products are no longer available." });
