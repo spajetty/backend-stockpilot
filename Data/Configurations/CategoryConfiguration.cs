@@ -40,6 +40,7 @@ public class ProductConfiguration : IEntityTypeConfiguration<Product>
             t.HasCheckConstraint("CK_Products_CostPrice", "\"CostPrice\" >= 0");
             t.HasCheckConstraint("CK_Products_SellingPrice", "\"SellingPrice\" >= 0");
             t.HasCheckConstraint("CK_Products_ReorderLevel", "\"ReorderLevel\" >= 0");
+            t.HasCheckConstraint("CK_Products_PendingOpeningStock", "\"PendingOpeningStock\" >= 0");
         });
 
         builder.Property(p => p.Name).HasMaxLength(200).IsRequired();
