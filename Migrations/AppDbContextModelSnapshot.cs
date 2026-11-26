@@ -107,10 +107,18 @@ namespace backend_stockpilot.Migrations
                         .IsRequired()
                         .HasColumnType("citext");
 
+                    b.Property<string>("SkuPrefix")
+                        .HasMaxLength(3)
+                        .HasColumnType("character varying(3)");
+
                     b.HasKey("Id");
 
                     b.HasIndex("Name")
                         .IsUnique();
+
+                    b.HasIndex("SkuPrefix")
+                        .IsUnique()
+                        .HasFilter("\"SkuPrefix\" IS NOT NULL");
 
                     b.ToTable("Categories");
                 });
