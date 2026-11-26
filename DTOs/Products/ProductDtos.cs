@@ -74,7 +74,6 @@ public record ProductDetailDto(
 
 public record ProductCreateRequest(
     string Name,
-    string Sku,
     string? Barcode,
     int? CategoryId,
     int? SupplierId,
@@ -84,12 +83,13 @@ public record ProductCreateRequest(
     string? ImageUrl,
     string? Description,
     bool AvailableInPos,
-    int OpeningStock,
-    int? StoreId);                  // owner only: which store gets the opening stock
+    int OpeningStock,                       
+    List<StoreStockRequest>? StoreStocks); 
+
+public record StoreStockRequest(int StoreId, int Quantity);
 
 public record ProductUpdateRequest(
     string Name,
-    string Sku,
     string? Barcode,
     int? CategoryId,
     int? SupplierId,
@@ -102,3 +102,5 @@ public record ProductUpdateRequest(
     int? PendingOpeningStock);      // only used while the product is pending or rejected
 
 public record RejectProductRequest(string Reason);
+
+public record DuplicateCheckDto(Dictionary<string, string> Fields);

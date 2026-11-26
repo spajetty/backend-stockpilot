@@ -2,6 +2,7 @@
 using System.Linq.Expressions;
 using System.Text;
 using System.Text.Json;
+using System.Text.RegularExpressions;
 using backend_stockpilot.Data;
 using backend_stockpilot.Dtos.Products;
 using backend_stockpilot.Models;
@@ -13,12 +14,6 @@ using Npgsql;
 
 namespace backend_stockpilot.Controllers;
 
-// Products are a shared catalogue (no StoreId). Stock comes from InventoryLevels, which the
-// global store filter already scopes: manager = own store, owner = the store picked in the
-// top bar (X-Store-Id) or every store when "All stores" is selected.
-//
-// Roles: Owner and Manager can add / edit / deactivate. InventoryClerk is view-only.
-// A manager's new product is saved as Pending (inactive, hidden from the POS) until the owner approves it.
 [ApiController]
 [Route("api/products")]
 [Authorize(Roles = "Owner,Manager,InventoryClerk")]
@@ -27,6 +22,12 @@ public class ProductsController(AppDbContext db, ICurrentStore currentStore) : C
     private const int MaxQuantity = 1_000_000;
     private const decimal MaxPrice = 10_000_000m;
     private const int MaxExportRows = 10_000;
+    private const int MaxStoresPerProduct = 100;
+
+    private static readonly Regex BarcodeFormat = new("^[0-9]{13}$", RegexOptions.Compiled);
+
+    private const string PlaceholderImagePrefix =
+        "https://readdy.ai/api/search-image?query=plain%20retail%20product%20placeholder";
 
     private static readonly Expression<Func<Product, bool>> IsApproved =
         p => p.Approval == ApprovalStatus.NotRequired || p.Approval == ApprovalStatus.Approved;
@@ -39,9 +40,6 @@ public class ProductsController(AppDbContext db, ICurrentStore currentStore) : C
     private string ActorName => Claim("name") ?? "Staff";
     private UserRole ActorRole => Enum.TryParse<UserRole>(Claim("role"), out var r) ? r : UserRole.Manager;
     private int? AuditStoreId => IsOwner ? (currentStore.StoreId is > 0 ? currentStore.StoreId : null) : OwnStoreId;
-
-    // Owner sees everything. Everyone else sees approved products plus the pending/rejected
-    // ones their own store submitted.
     private IQueryable<Product> VisibleProducts(bool track = false)
     {
         IQueryable<Product> q = track ? db.Products : db.Products.AsNoTracking();
@@ -121,15 +119,27 @@ public class ProductsController(AppDbContext db, ICurrentStore currentStore) : C
         return (q, null);
     }
 
-    private static IOrderedQueryable<Product> Order(IQueryable<Product> q, string? sort) =>
-        (sort ?? "name_asc").ToLowerInvariant() switch
+    // Column-header sorting. Ties fall back to name, then id, so paging stays stable.
+    private IOrderedQueryable<Product> Order(IQueryable<Product> q, string? sortBy, string? sortDir)
+    {
+        var asc = !string.Equals(sortDir, "desc", StringComparison.OrdinalIgnoreCase);
+
+        IOrderedQueryable<Product> By<TKey>(Expression<Func<Product, TKey>> key) =>
+            asc ? q.OrderBy(key) : q.OrderByDescending(key);
+
+        return (sortBy ?? "name").ToLowerInvariant() switch
         {
-            "name_desc" => q.OrderByDescending(p => p.Name).ThenBy(p => p.Id),
-            "price_asc" => q.OrderBy(p => p.SellingPrice).ThenBy(p => p.Name),
-            "price_desc" => q.OrderByDescending(p => p.SellingPrice).ThenBy(p => p.Name),
-            "newest" => q.OrderByDescending(p => p.CreatedAt).ThenByDescending(p => p.Id),
-            _ => q.OrderBy(p => p.Name).ThenBy(p => p.Id),
+            "sku" => By(p => p.Sku).ThenBy(p => p.Name).ThenBy(p => p.Id),
+            "cost" => By(p => p.CostPrice).ThenBy(p => p.Name).ThenBy(p => p.Id),
+            "price" => By(p => p.SellingPrice).ThenBy(p => p.Name).ThenBy(p => p.Id),
+            "margin" => By(p => p.SellingPrice > 0 ? (p.SellingPrice - p.CostPrice) / p.SellingPrice : 0m)
+                .ThenBy(p => p.Name).ThenBy(p => p.Id),
+            // Same store scope as the Stock column: the query filter on InventoryLevels applies here too
+            "stock" => By(p => db.InventoryLevels.Where(i => i.ProductId == p.Id).Sum(i => (int?)i.QuantityOnHand) ?? 0)
+                .ThenBy(p => p.Name).ThenBy(p => p.Id),
+            _ => By(p => p.Name).ThenBy(p => p.Id),
         };
+    }
 
     private async Task<List<ProductListItemDto>> ToItems(List<ProductRow> rows, CancellationToken ct)
     {
@@ -137,7 +147,6 @@ public class ProductsController(AppDbContext db, ICurrentStore currentStore) : C
 
         var ids = rows.Select(r => r.Id).ToList();
 
-        // The store query filter on InventoryLevels decides what this sums
         var levels = await db.InventoryLevels.AsNoTracking()
             .Where(i => ids.Contains(i.ProductId))
             .Select(i => new { i.ProductId, i.QuantityOnHand, i.ReorderLevelOverride })
@@ -178,7 +187,8 @@ public class ProductsController(AppDbContext db, ICurrentStore currentStore) : C
         [FromQuery] string? search = null,
         [FromQuery] int? categoryId = null,
         [FromQuery] string? status = null,
-        [FromQuery] string? sort = null,
+        [FromQuery] string? sortBy = null,
+        [FromQuery] string? sortDir = null,
         CancellationToken ct = default)
     {
         pageSize = Math.Clamp(pageSize, 1, 50);
@@ -190,7 +200,7 @@ public class ProductsController(AppDbContext db, ICurrentStore currentStore) : C
         var totalPages = Math.Max(1, (int)Math.Ceiling(total / (double)pageSize));
         page = Math.Clamp(page, 1, totalPages);
 
-        var rows = await Project(Order(q, sort).Skip((page - 1) * pageSize).Take(pageSize)).ToListAsync(ct);
+        var rows = await Project(Order(q, sortBy, sortDir).Skip((page - 1) * pageSize).Take(pageSize)).ToListAsync(ct);
         return new ProductsPageDto(await ToItems(rows, ct), page, pageSize, total, totalPages);
     }
 
@@ -246,13 +256,14 @@ public class ProductsController(AppDbContext db, ICurrentStore currentStore) : C
         [FromQuery] string? search = null,
         [FromQuery] int? categoryId = null,
         [FromQuery] string? status = null,
-        [FromQuery] string? sort = null,
+        [FromQuery] string? sortBy = null,
+        [FromQuery] string? sortDir = null,
         CancellationToken ct = default)
     {
         var (q, error) = ApplyFilters(VisibleProducts(), search, categoryId, status);
         if (q is null) return BadRequest(new { message = error });
 
-        var rows = await Project(Order(q, sort).Take(MaxExportRows)).ToListAsync(ct);
+        var rows = await Project(Order(q, sortBy, sortDir).Take(MaxExportRows)).ToListAsync(ct);
         var items = await ToItems(rows, ct);
 
         var inv = CultureInfo.InvariantCulture;
@@ -298,18 +309,18 @@ public class ProductsController(AppDbContext db, ICurrentStore currentStore) : C
     private static Fields ToFields(
         string? name, string? sku, string? barcode, int? categoryId, int? supplierId,
         decimal cost, decimal price, int reorder, string? imageUrl, string? description, bool availableInPos) =>
-        new(name?.Trim() ?? "", sku?.Trim() ?? "", Blank(barcode), categoryId is > 0 ? categoryId : null,
+        new(Regex.Replace(name?.Trim() ?? "", @"\s+", " "), (sku?.Trim() ?? "").ToUpperInvariant(), Blank(barcode), categoryId is > 0 ? categoryId : null,
             supplierId is > 0 ? supplierId : null, Round(cost), Round(price), reorder,
             Blank(imageUrl), Blank(description), availableInPos);
 
-    private static string? Validate(Fields f)
+    // currentBarcode is the saved value when editing. An old barcode that doesn't match the
+    // format is accepted as long as it isn't changed, so old products stay editable.
+    private static string? Validate(Fields f, string? currentBarcode = null)
     {
         if (f.Name.Length == 0) return "Product name is required.";
         if (f.Name.Length > 200) return "Product name is too long (200 characters max).";
-        if (f.Sku.Length == 0) return "SKU is required.";
-        if (f.Sku.Length > 50) return "SKU is too long (50 characters max).";
-        if (f.Sku.Any(char.IsWhiteSpace)) return "SKU can't contain spaces.";
-        if (f.Barcode is { Length: > 64 }) return "Barcode is too long (64 characters max).";
+        if (f.Barcode is not null && f.Barcode != currentBarcode && !BarcodeFormat.IsMatch(f.Barcode))
+            return "Barcode must be exactly 13 digits, numbers only (for example 4805000000002).";
         if (f.Cost < 0 || f.Cost > MaxPrice) return "Cost price must be between ₱0 and ₱10,000,000.";
         if (f.Price < 0 || f.Price > MaxPrice) return "Selling price must be between ₱0 and ₱10,000,000.";
         if (f.Reorder < 0 || f.Reorder > MaxQuantity) return "Reorder level must be between 0 and 1,000,000.";
@@ -332,20 +343,91 @@ public class ProductsController(AppDbContext db, ICurrentStore currentStore) : C
         return null;
     }
 
-    private async Task<string?> CheckDuplicates(Fields f, int excludeId, CancellationToken ct)
+    // Looks for another product with the same name, SKU, barcode or image. Returns a message per field.
+    // Pending and rejected products count too. When editing, a field the user didn't change is never
+    // reported, so old data can't block an unrelated edit.
+    private async Task<Dictionary<string, string>> FindDuplicates(Fields f, int excludeId, CancellationToken ct)
     {
-        // Sku is citext, so this is case-insensitive
-        if (await db.Products.AnyAsync(p => p.Sku == f.Sku && p.Id != excludeId, ct))
-            return $"SKU {f.Sku} is already used by another product.";
-        if (f.Barcode is not null && await db.Products.AnyAsync(p => p.Barcode == f.Barcode && p.Id != excludeId, ct))
-            return "That barcode is already used by another product.";
-        return null;
+        var errors = new Dictionary<string, string>();
+
+        var nameKey = f.Name.Length > 0 ? f.Name.ToLowerInvariant() : null;
+        var sku = f.Sku.Length > 0 ? f.Sku : null;
+        var barcode = f.Barcode;
+        var image = f.ImageUrl is not null && !f.ImageUrl.StartsWith(PlaceholderImagePrefix, StringComparison.OrdinalIgnoreCase)
+            ? f.ImageUrl
+            : null;
+        if (nameKey is null && sku is null && barcode is null && image is null) return errors;
+
+        var current = excludeId > 0
+            ? await db.Products.AsNoTracking().Where(p => p.Id == excludeId)
+                .Select(p => new { p.Name, p.Sku, p.Barcode, p.ImageUrl }).FirstOrDefaultAsync(ct)
+            : null;
+
+        var checkName = nameKey is not null && (current is null || !string.Equals(current.Name, f.Name, StringComparison.OrdinalIgnoreCase));
+        var checkSku = sku is not null && (current is null || !string.Equals(current.Sku, f.Sku, StringComparison.OrdinalIgnoreCase));
+        var checkBarcode = barcode is not null && (current is null || current.Barcode != barcode);
+        var checkImage = image is not null && (current is null || current.ImageUrl != image);
+        if (!checkName && !checkSku && !checkBarcode && !checkImage) return errors;
+
+        var hits = await db.Products.AsNoTracking()
+            .Where(p => p.Id != excludeId &&
+                ((nameKey != null && p.Name.ToLower() == nameKey) ||
+                 (sku != null && p.Sku == sku) ||
+                 (barcode != null && p.Barcode == barcode) ||
+                 (image != null && p.ImageUrl == image)))
+            .Select(p => new { p.Name, p.Sku, p.Barcode, p.ImageUrl, p.Approval, p.RequestedByStoreId })
+            .ToListAsync(ct);
+
+        // Products a manager can't see (another store's pending ones) are mentioned without details
+        bool CanSee(ApprovalStatus approval, int? requestedBy) =>
+            IsOwner
+            || approval is (ApprovalStatus.NotRequired or ApprovalStatus.Approved)
+            || (OwnStoreId is int own && requestedBy == own);
+
+        foreach (var h in hits)
+        {
+            var visible = CanSee(h.Approval, h.RequestedByStoreId);
+            var who = visible ? $"“{h.Name}”" : "another product";
+
+            if (checkName && string.Equals(h.Name, f.Name, StringComparison.OrdinalIgnoreCase))
+                errors.TryAdd("name", visible
+                    ? $"A product named {who} already exists (SKU {h.Sku})."
+                    : "A product with this name already exists.");
+
+            if (checkSku && string.Equals(h.Sku, f.Sku, StringComparison.OrdinalIgnoreCase))
+                errors.TryAdd("sku", $"SKU {f.Sku} is already used by {who}.");
+
+            if (checkBarcode && h.Barcode == barcode)
+                errors.TryAdd("barcode", $"This barcode already belongs to {who}. Each product has one barcode, so edit that product or add stock to it instead.");
+
+            if (checkImage && h.ImageUrl == image)
+                errors.TryAdd("imageUrl", $"{(visible ? who : "Another product")} already uses this image. Pick a different one or keep the placeholder.");
+        }
+
+        return errors;
+    }
+
+    private ConflictObjectResult DuplicateResponse(Dictionary<string, string> fields) =>
+        Conflict(new { message = "This looks like a product that already exists. Check the highlighted fields.", fields });
+
+    // Lets the form warn while the user is still typing. Saving runs the same check again.
+    [HttpGet("check-duplicates")]
+    [Authorize(Roles = "Owner,Manager")]
+    public async Task<ActionResult<DuplicateCheckDto>> CheckDuplicates(
+        [FromQuery] string? name,
+        [FromQuery] string? barcode,
+        [FromQuery] string? imageUrl,
+        [FromQuery] int? excludeId,
+        CancellationToken ct)
+    {
+        var f = ToFields(name, null, barcode, null, null, 0, 0, 0, imageUrl, null, true);
+        return new DuplicateCheckDto(await FindDuplicates(f, excludeId ?? 0, ct));
     }
 
     private static bool IsUniqueViolation(DbUpdateException ex) =>
         ex.InnerException is PostgresException { SqlState: PostgresErrorCodes.UniqueViolation };
 
-    private const string RaceMessage = "Another change just used that SKU or barcode. Check them and try again.";
+    private const string RaceMessage = "Another product was just saved with the same barcode. Check it and try again.";
 
     // ---------- audit ----------
 
@@ -371,39 +453,147 @@ public class ProductsController(AppDbContext db, ICurrentStore currentStore) : C
 
     private sealed record Change(string Field, string? Before, string? After, bool HideValues = false);
 
+    // ---------- SKU generation ----------
+    // A product's SKU is PREFIX-0000, where the prefix belongs to its category and the number is the
+    // next free one for that prefix (BEV-0009 -> BEV-0010). Nobody types a SKU.
+
+    private static readonly Dictionary<string, string> DefaultSkuPrefixes = new(StringComparer.OrdinalIgnoreCase)
+    {
+        ["Beverages"] = "BEV",
+        ["Grocery & Essentials"] = "GRC",
+        ["Health & Pharmacy"] = "HLT",
+        ["Apparel"] = "APP",
+        ["Home & Hardware"] = "HWH",
+        ["Electronics"] = "ELE",
+        ["Personal Care"] = "PCR",
+    };
+
+    // Preferred prefix first, then 3-letter fallbacks from the name, so a new category always gets a free one
+    private static IEnumerable<string> PrefixCandidates(string categoryName)
+    {
+        if (DefaultSkuPrefixes.TryGetValue(categoryName.Trim(), out var mapped)) yield return mapped;
+
+        var letters = new string(categoryName
+            .Select(char.ToUpperInvariant)
+            .Where(c => c is >= 'A' and <= 'Z')
+            .ToArray());
+        if (letters.Length == 0) letters = "PRD";
+        letters = letters.PadRight(3, 'X');
+
+        yield return letters[..3];
+
+        var consonants = letters.Skip(1).Where(c => "AEIOU".IndexOf(c) < 0).Take(2).ToArray();
+        if (consonants.Length == 2) yield return $"{letters[0]}{consonants[0]}{consonants[1]}";
+
+        for (var c = 'A'; c <= 'Z'; c++) yield return $"{letters[0]}{letters[1]}{c}";
+        for (var x = 'A'; x <= 'Z'; x++)
+            for (var y = 'A'; y <= 'Z'; y++)
+                yield return $"{letters[0]}{x}{y}";
+    }
+
+    // A category keeps its prefix for good, even if it is renamed later
+    private async Task<string> EnsureSkuPrefix(Category category, CancellationToken ct)
+    {
+        if (!string.IsNullOrEmpty(category.SkuPrefix)) return category.SkuPrefix;
+
+        var taken = (await db.Categories.AsNoTracking()
+                .Where(c => c.Id != category.Id && c.SkuPrefix != null)
+                .Select(c => c.SkuPrefix!)
+                .ToListAsync(ct))
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+
+        foreach (var candidate in PrefixCandidates(category.Name))
+        {
+            if (taken.Contains(candidate)) continue;
+            category.SkuPrefix = candidate;
+            return candidate;
+        }
+
+        throw new InvalidOperationException("No SKU prefix is left for this category.");
+    }
+
+    // Looks at every product with this prefix, inactive and pending ones too, because their SKUs
+    // are still taken. Old SKUs that don't end in a number (ELE-ANK-PC10) are ignored.
+    private async Task<string> NextSku(string prefix, CancellationToken ct)
+    {
+        var existing = await db.Products.AsNoTracking()
+            .Where(p => EF.Functions.ILike(p.Sku, prefix + "-%"))
+            .Select(p => p.Sku)
+            .ToListAsync(ct);
+
+        var pattern = new Regex($"^{prefix}-([0-9]+)$", RegexOptions.IgnoreCase);
+        var max = 0;
+        foreach (var sku in existing)
+        {
+            var m = pattern.Match(sku);
+            if (m.Success && int.TryParse(m.Groups[1].Value, out var n) && n > max) max = n;
+        }
+
+        return $"{prefix}-{max + 1:D4}";
+    }
+
     // ---------- create ----------
 
     [HttpPost]
     [Authorize(Roles = "Owner,Manager")]
     public async Task<ActionResult<ProductDetailDto>> Create([FromBody] ProductCreateRequest req, CancellationToken ct)
     {
-        var f = ToFields(req.Name, req.Sku, req.Barcode, req.CategoryId, req.SupplierId, req.CostPrice,
+        // No SKU in the request: it is generated below from the category
+        var f = ToFields(req.Name, null, req.Barcode, req.CategoryId, req.SupplierId, req.CostPrice,
             req.SellingPrice, req.ReorderLevel, req.ImageUrl, req.Description, req.AvailableInPos);
 
         if (Validate(f) is { } invalid) return BadRequest(new { message = invalid });
-        if (req.OpeningStock < 0 || req.OpeningStock > MaxQuantity)
-            return BadRequest(new { message = "Opening stock must be between 0 and 1,000,000." });
+        if (f.CategoryId is not int categoryId)
+            return BadRequest(new { message = "Pick a category. It sets the product's SKU." });
         if (await CheckReferences(f, ct) is { } badRef) return BadRequest(new { message = badRef });
-        if (await CheckDuplicates(f, 0, ct) is { } dup) return Conflict(new { message = dup });
+        var dups = await FindDuplicates(f, 0, ct);
+        if (dups.Count > 0) return DuplicateResponse(dups);
 
-        // Which store the opening stock belongs to
-        int? storeId;
+        // Opening stock per store. A manager's product is for their own store and waits for approval.
+        // The owner picks the stores and a quantity for each one.
+        var stockPlan = new List<(int StoreId, int Quantity)>();
         if (IsOwner)
         {
-            storeId = req.StoreId is > 0 ? req.StoreId : (currentStore.StoreId is > 0 ? currentStore.StoreId : null);
-            if (req.OpeningStock > 0 && storeId is null)
-                return BadRequest(new { message = "Pick a store for the opening stock." });
-            if (storeId is int chosen && !await db.Stores.AnyAsync(s => s.Id == chosen && s.IsActive, ct))
-                return BadRequest(new { message = "That store doesn't exist." });
+            var entries = req.StoreStocks ?? [];
+            // Only when the caller sent no list at all. An empty list means "no stores".
+            if (req.StoreStocks is null && currentStore.StoreId is > 0)
+                entries = [new StoreStockRequest(currentStore.StoreId.Value, req.OpeningStock)];
+
+            if (entries.Count > MaxStoresPerProduct)
+                return BadRequest(new { message = "Too many stores selected." });
+            if (entries.Any(e => e.StoreId <= 0) || entries.Select(e => e.StoreId).Distinct().Count() != entries.Count)
+                return BadRequest(new { message = "Each store can only be listed once." });
+            if (entries.Any(e => e.Quantity < 0 || e.Quantity > MaxQuantity))
+                return BadRequest(new { message = "Opening stock must be between 0 and 1,000,000 in every store." });
+            if (entries.Count == 0 && req.OpeningStock > 0)
+                return BadRequest(new { message = "Pick at least one store for the opening stock." });
+
+            var storeIds = entries.Select(e => e.StoreId).ToList();
+            if (storeIds.Count > 0 && await db.Stores.CountAsync(st => storeIds.Contains(st.Id) && st.IsActive, ct) != storeIds.Count)
+                return BadRequest(new { message = "One of the selected stores doesn't exist or is inactive." });
+
+            stockPlan = entries.Select(e => (e.StoreId, e.Quantity)).ToList();
         }
         else
         {
             if (OwnStoreId is not int own) return Forbid();
-            storeId = own;
+            if (req.OpeningStock < 0 || req.OpeningStock > MaxQuantity)
+                return BadRequest(new { message = "Opening stock must be between 0 and 1,000,000." });
+            stockPlan.Add((own, req.OpeningStock));
         }
+
+        var category = await db.Categories.FirstOrDefaultAsync(c => c.Id == categoryId, ct);
+        if (category is null) return BadRequest(new { message = "That category doesn't exist." });
 
         var now = DateTime.UtcNow;
         var needsApproval = !IsOwner;
+
+        await using var tx = await db.Database.BeginTransactionAsync(ct);
+        // Adding products is rare, so one lock around the whole thing keeps two people from getting the same SKU
+        await db.Database.ExecuteSqlInterpolatedAsync($"SELECT pg_advisory_xact_lock(4, 0)", ct);
+
+        var sku = await NextSku(await EnsureSkuPrefix(category, ct), ct);
+        f = f with { Sku = sku };
 
         var product = new Product
         {
@@ -420,49 +610,61 @@ public class ProductsController(AppDbContext db, ICurrentStore currentStore) : C
             AvailableInPos = f.AvailableInPos,
             IsActive = !needsApproval,
             Approval = needsApproval ? ApprovalStatus.Pending : ApprovalStatus.NotRequired,
-            RequestedByStoreId = needsApproval ? storeId : null,
-            PendingOpeningStock = needsApproval ? req.OpeningStock : 0,
+            RequestedByStoreId = needsApproval ? stockPlan[0].StoreId : null,
+            PendingOpeningStock = needsApproval ? stockPlan[0].Quantity : 0,
             CreatedById = currentStore.UserId,
             CreatedAt = now,
             UpdatedAt = now,
         };
         db.Products.Add(product);
 
-        // Owner adds are live straight away, so the opening stock lands now
-        if (!needsApproval && req.OpeningStock > 0 && storeId is int sid)
+        // Owner adds are live straight away: each selected store gets the product set up with its own quantity
+        if (!needsApproval)
         {
-            db.InventoryLevels.Add(new InventoryLevel
+            foreach (var (storeId, quantity) in stockPlan)
             {
-                StoreId = sid,
-                Product = product,
-                QuantityOnHand = req.OpeningStock,
-                UpdatedAt = now,
-            });
-            db.StockMovements.Add(new StockMovement
-            {
-                StoreId = sid,
-                Product = product,
-                MovementType = MovementType.Opening,
-                QuantityChange = req.OpeningStock,
-                QuantityBefore = 0,
-                QuantityAfter = req.OpeningStock,
-                UnitCost = f.Cost,
-                Reason = "Opening stock",
-                Approval = ApprovalStatus.NotRequired,
-                CreatedById = currentStore.UserId,
-                CreatedAt = now,
-            });
+                db.InventoryLevels.Add(new InventoryLevel
+                {
+                    StoreId = storeId,
+                    Product = product,
+                    QuantityOnHand = quantity,
+                    UpdatedAt = now,
+                });
+
+                if (quantity > 0)
+                {
+                    db.StockMovements.Add(new StockMovement
+                    {
+                        StoreId = storeId,
+                        Product = product,
+                        MovementType = MovementType.Opening,
+                        QuantityChange = quantity,
+                        QuantityBefore = 0,
+                        QuantityAfter = quantity,
+                        UnitCost = f.Cost,
+                        Reason = "Opening stock",
+                        Approval = ApprovalStatus.NotRequired,
+                        CreatedById = currentStore.UserId,
+                        CreatedAt = now,
+                    });
+                }
+            }
         }
+
+        var total = stockPlan.Sum(x => x.Quantity);
+        var stockNote = total > 0
+            ? $", opening stock {total}" + (stockPlan.Count > 1 ? $" across {stockPlan.Count} stores" : "")
+            : stockPlan.Count > 0 ? $", set up in {stockPlan.Count} store(s)" : "";
 
         db.AuditLogs.Add(needsApproval
             ? Audit("Product submitted", f.Sku,
-                $"{f.Sku}: {f.Name} submitted for owner approval ({Money(f.Price)}, opening stock {req.OpeningStock})", storeId)
-            : Audit("Product created", f.Sku,
-                $"{f.Sku}: {f.Name} added ({Money(f.Price)}" + (req.OpeningStock > 0 ? $", opening stock {req.OpeningStock}" : "") + ")", AuditStoreId));
+                $"{f.Sku}: {f.Name} submitted for owner approval ({Money(f.Price)}, opening stock {stockPlan[0].Quantity})", stockPlan[0].StoreId)
+            : Audit("Product created", f.Sku, $"{f.Sku}: {f.Name} added ({Money(f.Price)}{stockNote})", AuditStoreId));
 
         try
         {
             await db.SaveChangesAsync(ct);
+            await tx.CommitAsync(ct);
         }
         catch (DbUpdateException ex) when (IsUniqueViolation(ex))
         {
@@ -482,12 +684,14 @@ public class ProductsController(AppDbContext db, ICurrentStore currentStore) : C
         var product = await VisibleProducts(track: true).FirstOrDefaultAsync(p => p.Id == id, ct);
         if (product is null) return NotFound();
 
-        var f = ToFields(req.Name, req.Sku, req.Barcode, req.CategoryId, req.SupplierId, req.CostPrice,
+        // The SKU is generated when the product is created and never changes
+        var f = ToFields(req.Name, product.Sku, req.Barcode, req.CategoryId, req.SupplierId, req.CostPrice,
             req.SellingPrice, req.ReorderLevel, req.ImageUrl, req.Description, req.AvailableInPos);
 
-        if (Validate(f) is { } invalid) return BadRequest(new { message = invalid });
+        if (Validate(f, product.Barcode) is { } invalid) return BadRequest(new { message = invalid });
         if (await CheckReferences(f, ct) is { } badRef) return BadRequest(new { message = badRef });
-        if (await CheckDuplicates(f, id, ct) is { } dup) return Conflict(new { message = dup });
+        var dups = await FindDuplicates(f, id, ct);
+        if (dups.Count > 0) return DuplicateResponse(dups);
 
         var awaiting = product.Approval is (ApprovalStatus.Pending or ApprovalStatus.Rejected);
         int? newOpening = null;
@@ -509,7 +713,6 @@ public class ProductsController(AppDbContext db, ICurrentStore currentStore) : C
             sid is null ? null : await db.Suppliers.Where(s => s.Id == sid).Select(s => s.Name).FirstOrDefaultAsync(ct);
 
         Track("name", product.Name, f.Name);
-        Track("SKU", product.Sku, f.Sku);
         Track("barcode", product.Barcode, f.Barcode);
         if (product.CategoryId != f.CategoryId) Track("category", await CategoryName(product.CategoryId), await CategoryName(f.CategoryId));
         if (product.SupplierId != f.SupplierId) Track("supplier", await SupplierName(product.SupplierId), await SupplierName(f.SupplierId));
@@ -533,7 +736,6 @@ public class ProductsController(AppDbContext db, ICurrentStore currentStore) : C
         }
 
         product.Name = f.Name;
-        product.Sku = f.Sku;
         product.Barcode = f.Barcode;
         product.CategoryId = f.CategoryId;
         product.SupplierId = f.SupplierId;
