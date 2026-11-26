@@ -10,6 +10,8 @@ public class CategoryConfiguration : IEntityTypeConfiguration<Category>
     {
         builder.Property(c => c.Name).HasColumnType("citext").IsRequired();
         builder.HasIndex(c => c.Name).IsUnique();
+        builder.Property(c => c.SkuPrefix).HasMaxLength(3);
+        builder.HasIndex(c => c.SkuPrefix).IsUnique().HasFilter("\"SkuPrefix\" IS NOT NULL");
     }
 }
 
